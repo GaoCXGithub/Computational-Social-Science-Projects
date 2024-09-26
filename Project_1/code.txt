@@ -1,0 +1,23 @@
+//1. clone my repo to my local machine
+(base) beatrice@MacBook-Air ~ % git clone https://github.com/GaoCXGithub/Computational-Social-Science-Projects.git
+Cloning into 'Computational-Social-Science-Projects'...
+remote: Enumerating objects: 3, done.
+remote: Counting objects: 100% (3/3), done.
+remote: Total 3 (delta 0), reused 0 (delta 0), pack-reused 0 (from 0)
+Receiving objects: 100% (3/3), done.
+
+//2. create a new folder
+(base) beatrice@MacBook-Air ~ % cd Computational-Social-Science-Projects
+(base) beatrice@MacBook-Air Computational-Social-Science-Projects % mkdir Project_1
+
+//3. creats a text file
+(base) beatrice@MacBook-Air Computational-Social-Science-Projects % cd Project_1 
+(base) beatrice@MacBook-Air Project_1 % touch code.txt
+
+//4. edit the text file
+nano code.txt
+
+//5. add changes to github repo
+git add *
+git commit -m “update project 1”
+git push
