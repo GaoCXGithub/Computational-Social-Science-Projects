@@ -1,6 +1,8 @@
 ---
 title: 'Project 6: Randomization and Matching'
-output: pdf_document
+output:
+  html_document:
+    df_print: paged
 ---
 
 # Introduction
@@ -30,11 +32,19 @@ suppressWarnings({
 })
 ```
 
-
 ```{r}
 library(cobalt)
 # Load ypsps data
 ypsps <- read_csv('data/ypsps.csv')
+
+ypsps[] <- lapply(ypsps, function(x) {
+  if (inherits(x, "haven_labelled")) {
+    return(as.numeric(x))
+  } else {
+    return(x)
+  }
+})
+
 head(ypsps)
 ```
 
@@ -157,15 +167,19 @@ Following the categories listed in the Appendix of Henderson and Chatfield (2009
 However, including all of these covariates can lead to **proxy collinearity**, where multiple variables represent the same unobserved factors. This can weaken the quality and robustness of the estimated propensity scores. Also, including too many covariates causes the common support area is limited. To avoid this, I **excluded civic personality charactersitics** from both student and parent covariates because (1) they overlap significantly with civic participation measures, and (2) self-report bias. I also excluded measures of **external political efficacy**, as they are more strongly tied to political engagement than to college attendance.}
 \end{enumerate}
 
-
-
-
-
 ```{r}
 # Select covariates that represent the "true" model for selection, fit model
 # covariates selection
-post_cov_list <- c(names(ypsps[123:162])) #placebo and variables recorded in 1982 are exclueded
-baseline_cov_list <- c(names(ypsps[1:120]))
+post_cov_list <- c(names(ypsps[123:174])) #placebo variables are exclueded
+invalid_post_covs <- c("student_1973CollegeDegree", 
+                       "student_1973CurrentCollege", 
+                       "student_1973CollegeYears")
+post_cov_list <- setdiff(post_cov_list, invalid_post_covs)
+
+baseline_cov_list <- c(names(ypsps[12:120]))
+```
+
+```{r}
 student_ext_efficacy <- c ("student_GovtOpinion", "student_GovtCrook", "student_GovtWaste",
                                          "student_TrGovt", "student_GovtSmart", "student_Govt4All")
 
@@ -207,7 +221,6 @@ match_result <- matchit(match_formula,
 summary(match_result)
 ```
 
-
 ```{r}
 # Plot the balance for the top 10 covariates
 
@@ -237,12 +250,12 @@ ggplot(top10_df, aes(x = Variable, y = Coefficient, fill = Coefficient > 0)) +
   ) +
   theme_minimal() +
   theme(axis.text = element_text(size = 12))
+```
 
-
+```{r}
 bal <- bal.tab(match_result, un = TRUE)
 balance_df <- bal$Balance
 balance_df$varname <- rownames(balance_df)
-
 
 vars_to_plot <- intersect(top10_names, balance_df$varname)
 top10_df <- balance_df[balance_df$varname %in% vars_to_plot, ]
@@ -265,11 +278,65 @@ ggplot(plot_df, aes(x = smd, y = reorder(varname, abs(smd)), fill = match_status
   ) +
   theme_minimal(base_size = 13) +
   theme(legend.position = "top")
+
 ```
 
+```{r}
+bal_data_top10 <- balance_df %>%
+  filter(varname %in% top10_names) %>%
+  select(varname, Diff.Un, Diff.Adj)
+
+bal_data_long <- bal_data_top10 %>%
+  pivot_longer(cols = c(Diff.Un, Diff.Adj),
+               names_to = "sample",
+               values_to = "std_diff") %>%
+  mutate(sample = factor(sample, 
+                        levels = c("Diff.Un", "Diff.Adj"),
+                        labels = c("Before Matching", "After Matching")),
+         varname = factor(varname, levels = rev(top10_names)))
+
+ggplot(bal_data_long, aes(x = std_diff, y = varname, color = sample)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_vline(xintercept = 0, linetype = "solid") +
+  geom_vline(xintercept = c(-0.1, 0.1), linetype = "dashed") +
+  scale_color_manual(values = c("Before Matching" = "#00BFC4", "After Matching" = "#F8766D")) +
+  labs(title = "Covariate Balance (Top 10)",
+       x = "Standardized Mean Differences",
+       y = "",
+       color = "Sample") +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
 
 ```{r}
 # Report the overall balance and the proportion of covariates that meet the balance threshold
+overall_balance <- data.frame(
+  Metric = c("Mean Absolute SMD", "Maximum SMD", "Number of Variables with SMD <= 0.1"),
+  Before = c(mean(abs(bal$Balance$Diff.Un), na.rm = TRUE),
+             max(abs(bal$Balance$Diff.Un), na.rm = TRUE),
+             sum(abs(bal$Balance$Diff.Un) <= 0.1, na.rm = TRUE)),
+  After = c(mean(abs(bal$Balance$Diff.Adj), na.rm = TRUE),
+            max(abs(bal$Balance$Diff.Adj), na.rm = TRUE),
+            sum(abs(bal$Balance$Diff.Adj) <= 0.1, na.rm = TRUE))
+)
+
+
+overall_long <- overall_balance %>%
+  pivot_longer(cols = c("Before", "After"),
+               names_to = "Matching",
+               values_to = "Value") %>%
+  mutate(Matching = paste(Matching, "Matching"))
+
+
+ggplot(overall_long, aes(x = Matching, y = Value, fill = Matching)) +
+  geom_col() +
+  facet_wrap(~ Metric, scales = "free_y") +
+  labs(title = "Overall Balance Before and After Matching",
+       x = NULL,
+       y = "Value") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
 pscores <- match_result$distance
 treat <- ypsps$college
 weights <- match_result$weights
@@ -290,7 +357,7 @@ ggplot(matched_df, aes(x = pscore, fill = treat)) +
   theme_minimal()
 
 pscore_row <- bal$Balance["distance",]
-print(pscore_row) # a failed matching
+print(pscore_row) 
 ```
 
 ```{r}
@@ -301,20 +368,19 @@ num_balanced <- sum(abs(balance_vars$Diff.Adj) <= 0.1, na.rm = TRUE)
 cat("Number of covariates with adjusted SMD ≤ 0.1:", num_balanced, "\n")
 ```
 
-
-
-
 ```{r}
 # Calculate ATT
 matched_data <- match.data(match_result)
 
-att_model <- lm(student_ppnscal ~ college, data = matched_data, weights = matched_data$weights)
+formula_str <- paste("student_ppnscal ~ college + ", paste(post_cov_list, collapse = " + "))
+
+att_model <- lm(as.formula(formula_str),
+                data = matched_data, 
+                weights = matched_data$weights)
 
 
 summary(att_model)
 ```
-
-
 
 ## Simulations
 
@@ -330,16 +396,9 @@ Henderson/Chatfield argue that an improperly specified propensity score model ca
 \textbf{Note: There are lots of post-treatment covariates in this dataset (about 50!)! You need to be careful not to include these in the pre-treatment balancing. Many of you are probably used to selecting or dropping columns manually, or positionally. However, you may not always have a convenient arrangement of columns, nor is it fun to type out 50 different column names. Instead see if you can use dplyr 1.0.0 functions to programatically drop post-treatment variables (\href{https://www.tidyverse.org/blog/2020/03/dplyr-1-0-0-select-rename-relocate/}{here} is a useful tutorial).}
 
 ```{r}
-set.seed(42)
 
 run_ps_simulation <- function(data, treatment, outcome, 
-                              baseline_covs, post_covs, 
-                              random_seed = NULL) {
-
-  if (!is.null(random_seed)) {
-    set.seed(random_seed)
-  }
-  
+                              baseline_covs, post_covs) {
 
   valid_baseline_covs <- baseline_covs[!(baseline_covs %in% c(treatment, outcome))]
   valid_baseline_covs <- Filter(function(var) {
@@ -349,16 +408,14 @@ run_ps_simulation <- function(data, treatment, outcome,
   }, valid_baseline_covs)
   
   if (length(valid_baseline_covs) == 0) {
-    warning("No avaliable baseline covariates")
+    warning("No available baseline covariates")
     return(list(att = NA, prop_balanced = NA, mean_pct_improvement = NA,
-                ps_model = NA, covs_used = NA))
+                covs_used = NA))
   }
   
-
   n_covs <- sample(1:length(valid_baseline_covs), 1)
   ps_covs <- sample(valid_baseline_covs, n_covs)
   
-
   ps_formula <- as.formula(paste(treatment, "~", paste(ps_covs, collapse = " + ")))
   
   ps_match <- try(matchit(ps_formula, 
@@ -370,28 +427,25 @@ run_ps_simulation <- function(data, treatment, outcome,
                   silent = TRUE)
   if (inherits(ps_match, "try-error")) {
     return(list(att = NA, prop_balanced = NA, mean_pct_improvement = NA,
-                ps_model = NA, covs_used = ps_covs))
+                covs_used = ps_covs))
   }
   
-
   matched_data <- try(match.data(ps_match), silent = TRUE)
   if (inherits(matched_data, "try-error") || nrow(matched_data) == 0) {
     return(list(att = NA, prop_balanced = NA, mean_pct_improvement = NA,
-                ps_model = ps_match, covs_used = ps_covs))
+                covs_used = ps_covs))
   }
   
-
   valid_post_covs <- post_covs[!(post_covs %in% c(treatment, outcome))]
   post_formula <- as.formula(
     paste(outcome, "~", treatment, 
           if (length(valid_post_covs) > 0) paste("+", paste(valid_post_covs, collapse = " + ")) else "")
   )
   
-
   m <- try(lm(post_formula, data = matched_data, weights = matched_data$weights), silent = TRUE)
   if (inherits(m, "try-error")) {
     return(list(att = NA, prop_balanced = NA, mean_pct_improvement = NA,
-                ps_model = ps_match, covs_used = ps_covs))
+                covs_used = ps_covs))
   }
   
   att <- try(coef(m)[treatment], silent = TRUE)
@@ -399,21 +453,19 @@ run_ps_simulation <- function(data, treatment, outcome,
     att <- NA
   }
   
-
   bal <- try(bal.tab(ps_match, un = TRUE, m.threshold = 0.1), silent = TRUE)
   if (inherits(bal, "try-error")) {
     return(list(att = att, prop_balanced = NA, mean_pct_improvement = NA,
-                ps_model = ps_match, covs_used = ps_covs))
+                covs_used = ps_covs))
   }
   
   smd_table <- bal$Balance
- 
+  
   if ("M.Threshold.Adj" %in% names(smd_table)) {
     prop_balanced <- mean(smd_table$M.Threshold.Adj, na.rm = TRUE)
   } else {
     prop_balanced <- mean(abs(smd_table$Diff.Adj) <= 0.1, na.rm = TRUE)
   }
-  
   
   if (!any(is.na(smd_table$Diff.Un)) && !any(is.na(smd_table$Diff.Adj))) {
     pct_improvements <- (smd_table$Diff.Un - smd_table$Diff.Adj) / smd_table$Diff.Un * 100
@@ -422,50 +474,107 @@ run_ps_simulation <- function(data, treatment, outcome,
     mean_pct_improvement <- NA
   }
   
+  
   return(list(att = att, 
               prop_balanced = prop_balanced, 
               mean_pct_improvement = mean_pct_improvement,
-              ps_model = ps_match,
+              n_covs = length(ps_covs),
               covs_used = ps_covs))
 }
 ```
 
-
 ```{r}
+set.seed(42)
+
+
 n_sims <- 10000
+chunk_size <- 2500
+n_chunks <- ceiling(n_sims / chunk_size)
 
 
-results <- data.frame(
-  sim_id = 1:n_sims,
-  att = numeric(n_sims),
-  prop_balanced = numeric(n_sims),
-  mean_pct_improvement = numeric(n_sims)
-)
-model_list <- vector("list", n_sims)
+# Pre-select 10 random indices for which detailed model information will be stored
+selected_model_indices <- sample(1:n_sims, 10)
+detailed_models <- vector("list", 10)
 
 
-for (i in 1:n_sims) {
-  if (i %% 500 == 0) cat("Running simulation", i, "of", n_sims, "\n")
+results_list <- vector("list", n_chunks)
+
+for (chunk_i in seq_len(n_chunks)) {
+  start_idx <- (chunk_i - 1) * chunk_size + 1
+  end_idx   <- min(chunk_i * chunk_size, n_sims)
+  indices   <- start_idx:end_idx
+
+  block_results <- vector("list", length(indices))
   
-  sim_result <- run_ps_simulation(
-    data = ypsps,
-    treatment = "college",
-    outcome = "student_ppnscal",
-    baseline_covs = baseline_cov_list,
-    post_covs = post_cov_list,
-    random_seed = i
-  )
+  for (j in seq_along(indices)) {
+    sim_index <- indices[j]
+    
+    if (j %% 500 == 0) {
+      cat(sim_index, "/10000 \n")
+    }
+    
+   
+    result <- run_ps_simulation(
+      data = ypsps,
+      treatment = "college",
+      outcome = "student_ppnscal",
+      baseline_covs = baseline_cov_list,
+      post_covs = post_cov_list
+    )
+    
+    
+    block_results[[j]] <- result
+    
+    
+    if (sim_index %in% selected_model_indices) {
+      
+      detailed_model <- run_ps_simulation(
+        data = ypsps,
+        treatment = "college",
+        outcome = "student_ppnscal",
+        baseline_covs = baseline_cov_list,
+        post_covs = post_cov_list
+      )
+      
+      
+      ps_formula <- as.formula(paste("college ~", paste(result$covs_used, collapse = " + ")))
+      ps_match <- try(matchit(ps_formula, 
+                             data = ypsps,
+                             method = "nearest",
+                             distance = "logit",
+                             replace = TRUE,
+                             ratio = 1),
+                     silent = TRUE)
+      
+      
+      detailed_model$ps_model <- ps_match
+      detailed_model$sim_index <- sim_index
+      detailed_models[[which(selected_model_indices == sim_index)]] <- detailed_model
+    }
+  }
+
+block_df <- do.call(rbind, lapply(seq_along(block_results), function(j) {
+    res <- block_results[[j]]
+    data.frame(
+      sim_id = indices[j],
+      att = res$att, 
+      prop_balanced = res$prop_balanced,
+      mean_pct_improvement = res$mean_pct_improvement,
+      n_covs = res$n_covs,
+      stringsAsFactors = FALSE
+    )
+  }))
   
-  results$att[i] <- sim_result$att
-  results$prop_balanced[i] <- sim_result$prop_balanced
-  results$mean_pct_improvement[i] <- sim_result$mean_pct_improvement
-  model_list[[i]] <- sim_result
+  block_df <- block_df[!is.na(block_df$att), ]
+  
+  results_list[[chunk_i]] <- block_df
+  
+  rm(block_results, block_df)
+  gc()
 }
 
-
-results <- results[!is.na(results$att), ]
+results <- do.call(rbind, results_list)
 ```
-
 
 ```{r}
 # Plot ATT v. proportion
@@ -477,21 +586,10 @@ p1 <- ggplot(results, aes(x = prop_balanced, y = att)) +
        title = "Relationship Between Balance and Treatment Effect") +
   theme_minimal()
 
-library(hexbin)
-p2 <- ggplot(results, aes(x = prop_balanced, y = att)) +
-  geom_hex(bins = 50) +
-  scale_fill_viridis_c() +
-  geom_smooth(method = "loess", color = "white") +
-  labs(x = "Proportion of Balanced Covariates (SMD ≤ 0.1)",
-       y = "Average Treatment Effect on Treated (ATT)",
-       title = "Density of Balance vs Treatment Effect Estimates",
-       fill = "Count") +
-  theme_minimal()
-
 # Plot showing relationship between balance proportion and mean percent improvement
-p3 <- ggplot(results, aes(x = mean_pct_improvement, y = prop_balanced)) +
+p2 <- ggplot(results, aes(x = mean_pct_improvement, y = prop_balanced)) +
   geom_point(alpha = 0.1) +
-  geom_smooth(method = "loess", color = "steelblue") +
+  geom_smooth(method = "loess", color = "red") +
   labs(x = "Mean % Improvement in SMD",
        y = "Proportion of Balanced Covariates",
        title = "Balance Improvement vs Proportion Balanced") +
@@ -500,74 +598,266 @@ p3 <- ggplot(results, aes(x = mean_pct_improvement, y = prop_balanced)) +
 # Display the plots
 print(p1)
 print(p2)
-print(p3)
 ```
-
 
 ```{r}
 # 10 random covariate balance plots (hint try gridExtra)
 # Note: ggplot objects are finnicky so ask for help if you're struggling to automatically create them; consider using functions!
+library(reshape2)
+library(grid)
+library(stringr)
+library(gridExtra)
 
-set.seed(42)
-random_models <- sample(which(!is.na(results$att)), 10)
+create_balance_plot <- function(ps_model, sim_id) {
 
-# Plot covariate balance for each of the 10 random models
-for (i in 1:10) {
-  model_idx <- random_models[i]
+  sum_obj <- try(summary(ps_model), silent = TRUE)
+  if (inherits(sum_obj, "try-error")) {
+    return(NULL)
+  }
   
-  if (!is.na(model_list[[model_idx]]$ps_model)) {
-    cat("\nModel", i, "of 10 (Simulation", model_idx, ")\n")
-    cat("ATT:", results$att[model_idx], "\n")
-    cat("Proportion balanced:", results$prop_balanced[model_idx], "\n")
-    cat("Mean % improvement:", results$mean_pct_improvement[model_idx], "\n")
-    cat("Covariates used:", paste(model_list[[model_idx]]$covs_used, collapse=", "), "\n\n")
+
+  if ("sum.all" %in% names(sum_obj)) {
+    bal_data <- sum_obj$sum.all
     
-    # Create love plot for this model
-    love.plot(model_list[[model_idx]]$ps_model, 
-              threshold = 0.1,
-              var.order = "unadjusted",
-              abs = TRUE,
-              line = TRUE,
-              title = paste("Balance Plot - Model", i, "(Sim", model_idx, ")"))
+
+    var_names <- rownames(bal_data)
+    unadj_col <- "Std. Mean Diff."  
+    
+
+    if ("sum.matched" %in% names(sum_obj)) {
+      matched_data <- sum_obj$sum.matched
+      adj_col <- "Std. Mean Diff."  
+      
+
+      plot_data <- data.frame(
+        variable   = var_names,
+        Before = bal_data[, unadj_col],
+        After   = matched_data[, adj_col]
+      )
+      
+
+      if ("distance" %in% plot_data$variable) {
+        plot_data <- subset(plot_data, variable != "distance")
+      }
+      
+
+      plot_data_long <- melt(
+        plot_data, 
+        id.vars       = "variable",
+        variable.name = "Sample",
+        value.name    = "SMD"
+      )
+      
+ 
+
+      p <- ggplot(plot_data_long, aes(x = SMD, y = variable, color = Sample)) +
+        geom_point(size = 3, alpha = 0.8) +
+       
+        geom_vline(xintercept = 0, linetype = "solid") +
+        geom_vline(xintercept = c(-0.1, 0.1), linetype = "dashed") +
+       
+        labs(
+          title = paste("Model (Sim", sim_id, ")"),
+          x = "SMD",
+          y = NULL
+        ) +
+        scale_color_manual(values = c("Before" = "#45B6AA", "After" = "#F08080")) +
+        theme_bw(base_size = 12) +
+        theme(
+          legend.position   = "right",
+          plot.title        = element_text(hjust = 0.5, face = "bold"),
+          panel.grid.minor  = element_blank()
+        ) +
+        coord_flip()  
+      
+      return(p)
+    }
+  }
+  
+}
+```
+
+```{r}
+plot_balance_pages <- function(balance_plots, n_per_page = 4) {
+  n_total <- length(balance_plots)
+  if (n_total < 1) return(invisible(NULL))
+  
+  n_pages <- ceiling(n_total / n_per_page)
+  
+  for (page_i in seq_len(n_pages)) {
+    start_idx <- (page_i - 1) * n_per_page + 1
+    end_idx   <- min(page_i * n_per_page, n_total)
+    plots_subset <- balance_plots[start_idx:end_idx]
+    
+    grid_title <- textGrob(
+      paste("Covariate Balance - Page", page_i, "of", n_pages),
+      gp = gpar(fontsize = 16, fontface = "bold")
+    )
+    
+ 
+    layout <- grid.arrange(
+      grid_title,
+      do.call(arrangeGrob, c(plots_subset, list(ncol = 2))),
+      nrow    = 2,
+      heights = c(0.1, 0.9)
+    )
+    
+
+    print(layout)
+  }
+}
+```
+
+```{r}
+balance_plots <- list()
+
+
+for (i in seq_along(detailed_models)) {
+  model_info <- detailed_models[[i]]
+  
+
+  if (is.null(model_info)) {
+    next
+  }
+  
+  ps_model <- model_info$ps_model
+  if (is.null(ps_model) || !inherits(ps_model, "matchit")) {
+    next
+  }
+  
+  sim_id <- model_info$sim_index
+  
+
+  cat("\nModel", i, "of", length(detailed_models), "(Simulation index =", sim_id, ")\n")
+  cat("ATT:", model_info$att, "\n")
+  cat("Proportion balanced:", model_info$prop_balanced, "\n")
+  cat("Mean % improvement:", model_info$mean_pct_improvement, "\n")
+  cat("Number of covariates used:", model_info$n_covs, "\n\n")
+  
+
+  p <- create_balance_plot(ps_model, sim_id)
+  
+
+  if (!is.null(p)) {
+    balance_plots[[length(balance_plots) + 1]] <- p
   }
 }
 
-# Analyze distribution of ATT estimates
-summary(results$att)
-hist(results$att, 
-     breaks = 50, 
-     main = "Distribution of ATT Estimates",
-     xlab = "ATT")
 
-# Analyze relationship between number of covariates and balance
-# Extract number of covariates used in each model
-num_covs <- sapply(model_list, function(x) {
-  if (is.na(x$ps_model)) return(NA)
-  length(x$covs_used)
-})
-
-# Add to results
-results$num_covs <- num_covs[1:nrow(results)]
-
-# Plot relationship
-ggplot(results[!is.na(results$num_covs),], aes(x = as.factor(num_covs), y = prop_balanced)) +
-  geom_boxplot() +
-  labs(x = "Number of Covariates in PS Model",
-       y = "Proportion of Balanced Covariates",
-       title = "Impact of Number of Covariates on Balance") +
-  theme_minimal()
+plot_balance_pages(balance_plots, n_per_page = 4)
 ```
 
 ## Questions
 
+    
+```{r}
+extract_smd <- function(ps_model) {
+  sum_obj <- try(summary(ps_model), silent = TRUE)
+  if (inherits(sum_obj, "try-error")) return(NULL)
+
+  if (!all(c("sum.all", "sum.matched") %in% names(sum_obj))) return(NULL)
+
+  bal_before <- sum_obj$sum.all
+  bal_after  <- sum_obj$sum.matched
+
+  df_before <- data.frame(
+    variable = rownames(bal_before),
+    SMD_before = bal_before[,"Std. Mean Diff."],
+    stringsAsFactors = FALSE
+  )
+  df_after <- data.frame(
+    variable = rownames(bal_after),
+    SMD_after = bal_after[,"Std. Mean Diff."],
+    stringsAsFactors = FALSE
+  )
+
+  df_merged <- merge(df_before, df_after, by = "variable", all = TRUE)
+  df_merged <- df_merged[ !df_merged$variable %in% c("distance", "(Intercept)"), ]
+  return(df_merged)
+}
+```
+
+
+```{r}
+smd_all_models <- data.frame()
+
+for (i in seq_along(detailed_models)) {
+  model_info <- detailed_models[[i]]
+  if (is.null(model_info)) next
+  
+  ps_model   <- model_info$ps_model
+  sim_id     <- model_info$sim_index
+  
+  if (!inherits(ps_model, "matchit")) next
+  
+  smd_df <- extract_smd(ps_model)
+  if (is.null(smd_df) || nrow(smd_df) == 0) next
+  
+  smd_df$model_index <- i
+  smd_df$sim_id <- sim_id
+  
+  smd_all_models <- rbind(smd_all_models, smd_df)
+}
+```
+
+
+```{r}
+common_vars <- smd_all_models %>%
+  count(variable) %>%
+  filter(n >= 7) %>%
+  pull(variable)
+
+smd_common_long <- smd_all_models %>%
+  filter(variable %in% common_vars) %>%
+  pivot_longer(cols = c(SMD_before, SMD_after),
+               names_to = "phase",
+               values_to = "SMD")
+
+common_plots <- lapply(common_vars, function(varname) {
+  df_var <- smd_common_long %>% filter(variable == varname)
+
+  ggplot(df_var, aes(x = factor(model_index), y = SMD, color = phase)) +
+    geom_point(position = position_dodge(width = 0.4), size = 2, alpha = 0.75) +
+    geom_hline(yintercept = c(-0.1, 0.1), linetype = "dashed", color = "gray50") +
+    scale_color_manual(
+      values = c("SMD_before" = "#45B6AA", "SMD_after" = "#F08080" ),
+      labels = c("SMD_before" = "Before", "SMD_after" = "After")
+    ) +
+    labs(
+      title = varname,
+      x = "Model Index",
+      y = "SMD",
+      color = NULL
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "bottom"
+    )
+})
+
+plot_balance_pages(common_plots, n_per_page = 4)
+```
+
+
+````{=tex}
 \begin{enumerate}
     \item \textbf{How many simulations resulted in models with a higher proportion of balanced covariates? Do you have any concerns about this?}
-    Your Answer:...
-    \item \textbf{Analyze the distribution of the ATTs. Do you have any concerns about this distribution?}
-    Your Answer:...
-    \item \textbf{Do your 10 randomly chosen covariate balance plots produce similar numbers on the same covariates? Is it a concern if they do not?}
-    Your Answer:...
+    Your Answer:
+According to p1, most of the simulations fall within the range of 0.4 to 0.95, with a denser cluster between 0.4 and 0.6. Ideally, if the propensity score model is correctly specified, all included covariates should be roughly balanced after matching. So, a low proportion of balanced covariates may indicate poor estimation of propensity scores.
+
+The relationship between the proportion of balanced covariates and the mean percent improvement in SMD (p2) shows that higher overall balance doesn’t necessarily mean more covariates are actually balanced. This is because propensity score estimation acts as a form of dimension reduction: some covariates are weighted heavily, while others may be ignored. In addition, interactions among covariates, especially in high-dimensional data, can influence this relationship. Given this, it may be more practical to focus on balancing key confounding covariates rather than aiming for balance across all variables.
+    
+  \item \textbf{Analyze the distribution of the ATTs. Do you have any concerns about this distribution?}
+    Your Answer: 
+Most of the estimated ATTs fall between 0.5 and 1.5. However, a higher proportion of balanced covariates does not reduce the variance of these estimates. In fact, even when all covariates are balanced, the ATT estimates still appear randomly scattered within this range. This suggests that achieving balance alone doesn’t guarantee stable or reliable ATT estimates. If the matching algorithm is not appropriate, the resulting causal effect estimates may still be flawed, regardless of how well covariates are balanced.
+
+  \item \textbf{Do your 10 randomly chosen covariate balance plots produce similar numbers on the same covariates? Is it a concern if they do not?}
+    Your Answer: Overall, the models produce similar improvements in SMD for the same covariates. However, some covariates show higher variance in their SMD improvements. For example, parent_PID in model 8, parent_WinArg in model 3, and student_GovtCrook in model 7 are significant outliers. This happens because the marginal contribution of a covariate to the propensity score can vary depending on which other covariates are included. If a covariate is highly collinear with others in the model, its influence can shift dramatically.
+This highlights a key issue that PSM is sensitive to model specification. As a result, ATT estimates may not be robust across different model choices.
 \end{enumerate}
+````
 
 # Matching Algorithm of Your Choice
 
@@ -576,16 +866,14 @@ ggplot(results[!is.na(results$num_covs),], aes(x = as.factor(num_covs), y = prop
 Henderson/Chatfield propose using genetic matching to learn the best weights for Mahalanobis distance matching. Choose a matching algorithm other than the propensity score (you may use genetic matching if you wish, but it is also fine to use the greedy or optimal algorithms we covered in lab instead). Repeat the same steps as specified in Section 4.2 and answer the following questions:
 
 ```{r}
-library(Matching)
-library(doParallel)
 
-
-run_genetic_matching_simulation <- function(data, treatment, outcome, 
-                                              baseline_covs, post_covs, 
-                                              random_seed = NULL) {
-  if (!is.null(random_seed)) set.seed(random_seed)
+run_optimal_simulation <- function(data, treatment, outcome, 
+                              baseline_covs, post_covs) {
   
- 
+  old_warn <- options("warn")
+  options(warn = -1)
+  on.exit(options(old_warn))
+
   valid_baseline_covs <- baseline_covs[!(baseline_covs %in% c(treatment, outcome))]
   valid_baseline_covs <- Filter(function(var) {
     if (!var %in% names(data)) return(FALSE)
@@ -594,113 +882,181 @@ run_genetic_matching_simulation <- function(data, treatment, outcome,
   }, valid_baseline_covs)
   
   if (length(valid_baseline_covs) == 0) {
-    warning("No available covariates")
+    warning("No available baseline covariates")
     return(list(att = NA, prop_balanced = NA, mean_pct_improvement = NA,
-                match_obj = NA, covs_used = NA))
+                covs_used = NA))
   }
-  
   
   n_covs <- sample(1:length(valid_baseline_covs), 1)
   ps_covs <- sample(valid_baseline_covs, n_covs)
   
- 
-  X <- as.matrix(data[, ps_covs, drop = FALSE])
-  X <- apply(X, 2, function(x) {
-    if (is.factor(x)) as.numeric(x) else x
-  })
+  ps_formula <- as.formula(paste(treatment, "~", paste(ps_covs, collapse = " + ")))
   
+  ps_match <- try(matchit(ps_formula,
+                          data = data,
+                          method = "optimal",
+                          distance = "logit",
+                          ratio = 1), silent = TRUE)
   
-  genout <- try(GenMatch(Tr = data[[treatment]], 
-                         X = X, 
-                         BalanceMatrix = X,
-                         estimand = "ATT",
-                         pop.size = 10,          
-                         max.generations = 5,      
-                         wait.generations = 2,     
-                         print.level = 0),
-                silent = TRUE)
-  if (inherits(genout, "try-error")) {
+  if (inherits(ps_match, "try-error")) {
     return(list(att = NA, prop_balanced = NA, mean_pct_improvement = NA,
-                match_obj = NA, covs_used = ps_covs))
+                covs_used = ps_covs))
   }
   
- 
-  matchout <- try(Match(Tr = data[[treatment]], 
-                        X = X, 
-                        Weight.matrix = genout,
-                        estimand = "ATT", 
-                        M = 1, 
-                        replace = TRUE),
-                  silent = TRUE)
-  if (inherits(matchout, "try-error")) {
+  matched_data <- try(match.data(ps_match), silent = TRUE)
+  if (inherits(matched_data, "try-error") || nrow(matched_data) == 0) {
     return(list(att = NA, prop_balanced = NA, mean_pct_improvement = NA,
-                match_obj = genout, covs_used = ps_covs))
+                covs_used = ps_covs))
   }
   
- 
-  att <- matchout$est
+  valid_post_covs <- post_covs[!(post_covs %in% c(treatment, outcome))]
+  post_formula <- as.formula(
+    paste(outcome, "~", treatment, 
+          if (length(valid_post_covs) > 0) paste("+", paste(valid_post_covs, collapse = " + ")) else "")
+  )
   
- 
-  standardized_diff <- sapply(ps_covs, function(var) {
-    tr_vals <- data[data[[treatment]] == 1, var]
-    co_vals <- data[data[[treatment]] == 0, var]
-    diff_val <- mean(tr_vals, na.rm = TRUE) - mean(co_vals, na.rm = TRUE)
-    pooled_sd <- sqrt((var(tr_vals, na.rm = TRUE) + var(co_vals, na.rm = TRUE)) / 2)
-    if (pooled_sd == 0) return(NA) else return(diff_val / pooled_sd)
-  })
+  m <- try(lm(post_formula, data = matched_data, weights = matched_data$weights), silent = TRUE)
+  if (inherits(m, "try-error")) {
+    return(list(att = NA, prop_balanced = NA, mean_pct_improvement = NA,
+                covs_used = ps_covs))
+  }
   
-  prop_balanced <- mean(abs(standardized_diff) < 0.1, na.rm = TRUE)
+  att <- try(coef(m)[treatment], silent = TRUE)
+  if (inherits(att, "try-error") || is.na(att)) {
+    att <- NA
+  }
   
-  mean_pct_improvement <- NA
+  bal <- try(bal.tab(ps_match, un = TRUE, m.threshold = 0.1), silent = TRUE)
+  if (inherits(bal, "try-error")) {
+    return(list(att = att, prop_balanced = NA, mean_pct_improvement = NA,
+                covs_used = ps_covs))
+  }
+  
+  smd_table <- bal$Balance
+  
+  if ("M.Threshold.Adj" %in% names(smd_table)) {
+    prop_balanced <- mean(smd_table$M.Threshold.Adj, na.rm = TRUE)
+  } else {
+    prop_balanced <- mean(abs(smd_table$Diff.Adj) <= 0.1, na.rm = TRUE)
+  }
+  
+  if (!any(is.na(smd_table$Diff.Un)) && !any(is.na(smd_table$Diff.Adj))) {
+    pct_improvements <- (smd_table$Diff.Un - smd_table$Diff.Adj) / smd_table$Diff.Un * 100
+    mean_pct_improvement <- mean(pct_improvements, na.rm = TRUE)
+  } else {
+    mean_pct_improvement <- NA
+  }
+  
   
   return(list(att = att, 
               prop_balanced = prop_balanced, 
               mean_pct_improvement = mean_pct_improvement,
-              match_obj = matchout,
+              n_covs = length(ps_covs),
               covs_used = ps_covs))
 }
+  
+```
 
-）
+```{r, message=FALSE, warning=FALSE}
+set.seed(42)
+
+
 n_sims <- 10000
+chunk_size <- 1000
+n_chunks <- ceiling(n_sims / chunk_size)
 
 
-cl <- makeCluster(detectCores() - 1)
-registerDoParallel(cl)
+# Pre-select 10 random indices for which detailed model information will be stored
+selected_model_indices <- sample(1:n_sims, 10)
+detailed_models <- vector("list", 10)
 
 
-results_list <- foreach(i = 1:n_sims, .packages = "Matching") %dopar% {
-  run_genetic_matching_simulation(
-    data = ypsps,
-    treatment = "college",
-    outcome = "student_ppnscal",
-    baseline_covs = baseline_cov_list,
-    post_covs = post_cov_list,
-    random_seed = i
-  )
+results_list <- vector("list", n_chunks)
+
+for (chunk_i in seq_len(n_chunks)) {
+  start_idx <- (chunk_i - 1) * chunk_size + 1
+  end_idx   <- min(chunk_i * chunk_size, n_sims)
+  indices   <- start_idx:end_idx
+
+  block_results <- vector("list", length(indices))
+  
+  for (j in seq_along(indices)) {
+    sim_index <- indices[j]
+    
+    if (j %% 500== 0) {
+      cat(sim_index, "/10000 \n")
+    }
+    
+   
+    result <- run_optimal_simulation(
+      data = ypsps,
+      treatment = "college",
+      outcome = "student_ppnscal",
+      baseline_covs = baseline_cov_list,
+      post_covs = post_cov_list
+    )
+    
+    
+    block_results[[j]] <- result
+    
+    
+    if (sim_index %in% selected_model_indices) {
+      
+      detailed_model <- run_optimal_simulation(
+        data = ypsps,
+        treatment = "college",
+        outcome = "student_ppnscal",
+        baseline_covs = baseline_cov_list,
+        post_covs = post_cov_list
+      )
+      
+      
+      ps_formula <- as.formula(paste("college ~", paste(result$covs_used, collapse = " + ")))
+      ps_match <- try(matchit(ps_formula, 
+                             data = ypsps,
+                             method = "optimal",
+                             distance = "logit",
+                             ratio = 1),
+                     silent = TRUE)
+      
+      
+      detailed_model$ps_model <- ps_match
+      detailed_model$sim_index <- sim_index
+      detailed_models[[which(selected_model_indices == sim_index)]] <- detailed_model
+    }
+  }
+
+block_df <- do.call(rbind, lapply(seq_along(block_results), function(j) {
+    res <- block_results[[j]]
+    if(is.null(res$n_covs) || length(res$n_covs) == 0) {
+      res$n_covs <- NA
+    }
+    
+    data.frame(
+      sim_id = indices[j],
+      att = ifelse(is.null(res$att) || length(res$att) == 0, NA, res$att), 
+      prop_balanced = ifelse(is.null(res$prop_balanced) || length(res$prop_balanced) == 0, NA, res$prop_balanced),
+      mean_pct_improvement = ifelse(is.null(res$mean_pct_improvement) || length(res$mean_pct_improvement) == 0, NA, res$mean_pct_improvement),
+      n_covs = ifelse(is.null(res$n_covs) || length(res$n_covs) == 0, NA, res$n_covs),
+      stringsAsFactors = FALSE
+    )
+  }))
+  
+  block_df <- block_df[!is.na(block_df$att), ]
+  
+  results_list[[chunk_i]] <- block_df
+  
+  rm(block_results, block_df)
+  gc()
 }
 
-
-stopCluster(cl)
-
-
-results_df <- do.call(rbind, lapply(results_list, function(res) {
-  data.frame(att = res$att, 
-             prop_balanced = res$prop_balanced, 
-             mean_pct_improvement = res$mean_pct_improvement)
-}))
-results_df <- results_df[!is.na(results_df$att), ]
-
-
-model_list <- results_list
-
-
-head(results_df)
+optimal_results <- do.call(rbind, results_list)
 ```
 
 ```{r}
 # Visualization for distributions of percent improvement
 # Plot ATT v. proportion
-p1 <- ggplot(results, aes(x = prop_balanced, y = att)) +
+p1 <- ggplot(optimal_results, aes(x = prop_balanced, y = att)) +
   geom_point(alpha = 0.1) +
   geom_smooth(method = "loess", color = "red") +
   labs(x = "Proportion of Balanced Covariates (SMD ≤ 0.1)",
@@ -708,21 +1064,11 @@ p1 <- ggplot(results, aes(x = prop_balanced, y = att)) +
        title = "Relationship Between Balance and Treatment Effect") +
   theme_minimal()
 
-library(hexbin)
-p2 <- ggplot(results, aes(x = prop_balanced, y = att)) +
-  geom_hex(bins = 50) +
-  scale_fill_viridis_c() +
-  geom_smooth(method = "loess", color = "white") +
-  labs(x = "Proportion of Balanced Covariates (SMD ≤ 0.1)",
-       y = "Average Treatment Effect on Treated (ATT)",
-       title = "Density of Balance vs Treatment Effect Estimates",
-       fill = "Count") +
-  theme_minimal()
 
 # Plot showing relationship between balance proportion and mean percent improvement
-p3 <- ggplot(results, aes(x = mean_pct_improvement, y = prop_balanced)) +
+p2 <- ggplot(optimal_results, aes(x = mean_pct_improvement, y = prop_balanced)) +
   geom_point(alpha = 0.1) +
-  geom_smooth(method = "loess", color = "steelblue") +
+  geom_smooth(method = "loess", color = "red") +
   labs(x = "Mean % Improvement in SMD",
        y = "Proportion of Balanced Covariates",
        title = "Balance Improvement vs Proportion Balanced") +
@@ -731,73 +1077,97 @@ p3 <- ggplot(results, aes(x = mean_pct_improvement, y = prop_balanced)) +
 # Display the plots
 print(p1)
 print(p2)
-print(p3)
 ```
-
 
 ```{r}
 # 10 random covariate balance plots (hint try gridExtra)
 # Note: ggplot objects are finnicky so ask for help if you're struggling to automatically create them; consider using functions!
 
-set.seed(42)
-random_models <- sample(which(!is.na(results$att)), 10)
+balance_plots <- list()
 
-# Plot covariate balance for each of the 10 random models
-for (i in 1:10) {
-  model_idx <- random_models[i]
+
+for (i in seq_along(detailed_models)) {
+  model_info <- detailed_models[[i]]
   
-  if (!is.na(model_list[[model_idx]]$ps_model)) {
-    cat("\nModel", i, "of 10 (Simulation", model_idx, ")\n")
-    cat("ATT:", results$att[model_idx], "\n")
-    cat("Proportion balanced:", results$prop_balanced[model_idx], "\n")
-    cat("Mean % improvement:", results$mean_pct_improvement[model_idx], "\n")
-    cat("Covariates used:", paste(model_list[[model_idx]]$covs_used, collapse=", "), "\n\n")
-    
-    # Create love plot for this model
-    love.plot(model_list[[model_idx]]$ps_model, 
-              threshold = 0.1,
-              var.order = "unadjusted",
-              abs = TRUE,
-              line = TRUE,
-              title = paste("Balance Plot - Model", i, "(Sim", model_idx, ")"))
+
+  if (is.null(model_info)) {
+    next
+  }
+  
+  ps_model <- model_info$ps_model
+  if (is.null(ps_model) || !inherits(ps_model, "matchit")) {
+    next
+  }
+  
+  sim_id <- model_info$sim_index
+  
+
+  cat("\nModel", i, "of", length(detailed_models), "(Simulation index =", sim_id, ")\n")
+  cat("ATT:", model_info$att, "\n")
+  cat("Proportion balanced:", model_info$prop_balanced, "\n")
+  cat("Mean % improvement:", model_info$mean_pct_improvement, "\n")
+  cat("Number of covariates used:", model_info$n_covs, "\n\n")
+  
+
+  p <- create_balance_plot(ps_model, sim_id)
+  
+
+  if (!is.null(p)) {
+    balance_plots[[length(balance_plots) + 1]] <- p
   }
 }
 
-# Analyze distribution of ATT estimates
-summary(results$att)
-hist(results$att, 
-     breaks = 50, 
-     main = "Distribution of ATT Estimates",
-     xlab = "ATT")
 
-# Analyze relationship between number of covariates and balance
-# Extract number of covariates used in each model
-num_covs <- sapply(model_list, function(x) {
-  if (is.na(x$ps_model)) return(NA)
-  length(x$covs_used)
-})
-
-# Add to results
-results$num_covs <- num_covs[1:nrow(results)]
-
-# Plot relationship
-ggplot(results[!is.na(results$num_covs),], aes(x = as.factor(num_covs), y = prop_balanced)) +
-  geom_boxplot() +
-  labs(x = "Number of Covariates in PS Model",
-       y = "Proportion of Balanced Covariates",
-       title = "Impact of Number of Covariates on Balance") +
-  theme_minimal()
-
+plot_balance_pages(balance_plots, n_per_page = 4)
 ```
 
 ## Questions
 
+```{r}
+compare_df <- bind_rows(
+  results %>% select(mean_pct_improvement) %>% mutate(method = "PS"),
+  optimal_results %>% select(mean_pct_improvement) %>% mutate(method = "Optimal")
+)
+
+compare_df <- compare_df %>% filter(!is.na(mean_pct_improvement))
+
+ggplot(compare_df, aes(x = mean_pct_improvement, fill = method, color = method)) +
+  geom_density(alpha = 0.4, adjust = 1.2) +
+  labs(
+    title = "Density of Mean % Improvement in SMD",
+    x = "Mean % Improvement (SMD)",
+    y = "Density",
+    fill = "Matching Method",
+    color = "Matching Method"
+  ) +
+  theme_minimal(base_size = 13) +
+  scale_fill_manual(values = c("PS" = "#1b9e77", "Optimal" = "#d95f02")) +
+  scale_color_manual(values = c("PS" = "#1b9e77", "Optimal" = "#d95f02")) +
+  theme(legend.position = "top")
+```
+
+````{=tex}
 \begin{enumerate}
     \item \textbf{Does your alternative matching method have more runs with higher proportions of balanced covariates?}
-     Your Answer:...
-    \item \textbf{Use a visualization to examine the change in the distribution of the percent improvement in balance in propensity score matching vs. the distribution of the percent improvement in balance in your new method. Which did better? Analyze the results in 1-2 sentences.}
-    Your Answer:...
+     Your Answer:
+Unlike PSM, which matches units based on the closest propensity scores, optimal matching finds a matching scheme that minimizes the total distance between all matched pairs.
+Compared to PSM, simulation results from optimal matching show more consistent proportions of balanced covariates, typically ranging from 0.5 to 0.75. This suggests that while optimal matching tends to achieve lower overall balance than PSM, its performance is more stable.
+Interestingly, the ATT estimates from optimal matching differ significantly from those produced by PSM. One possible reason is that optimal matching may ignore certain outliers in the treatment group to improve overall match quality. These outliers often have unusually high treatment effects, so excluding them can shift the estimated ATT.     
+     
+ \item \textbf{Use a visualization to examine the change in the distribution of the percent improvement in balance in propensity score matching vs. the distribution of the percent improvement in balance in your new method. Which did better? Analyze the results in 1-2 sentences.}
+  \end{enumerate}
+    
+
+
+
+````{=tex}
+\begin{enumerate}   
+    Your Answer:
+The distribution of PSM is wider and more right-skewed. Many models achieve very large SMD improvements (over 100%), but the lower peak suggests high variability across models—some show significant balance improvement, while others show little or even negative improvement. This reflects that PSM can be inconsistent: it may perform very well in some cases, but fail badly in others.
+In contrast, the distribution of optimal matching is steeper and more concentrated in the lower improvement range, mostly between 0% and 50%. The sharp peak and lack of long tails indicate that most models achieve modest but consistent improvements. Optimal matching is more “convergent”—its results are more stable and less prone to extremes.
+In short, PSM is more of a high-risk, high-reward method: it has the potential for excellent balance but also a higher chance of failure or unstable outcomes. Optimal matching is safer and more consistent, though it generally achieves less dramatic improvements. Theoretically, PSM can outperform if the covariate set is carefully chosen based on prior knowledge and a good understanding of the dataset.
 \end{enumerate}
+````
 
 \textbf{Optional:} Looking ahead to the discussion questions, you may choose to model the propensity score using an algorithm other than logistic regression and perform these simulations again, if you wish to explore the second discussion question further.
 
@@ -813,4 +1183,3 @@ ggplot(results[!is.na(results$num_covs),], aes(x = as.factor(num_covs), y = prop
     \item \textbf{As Henderson and Chatfield (2009) noted, matching models are highly sensitive to both the choice of algorithm and the selection of covariates. In the “one model” section, manually selecting covariates for propensity score estimation led to very poor results. Only 13 covariates had adjusted standardized mean differences below the 0.1 threshold, and overall covariate balance actually worsened after matching. This is likely due to including too many covariates, which leads to the curse of dimensionality.
     When there are too many covariates, the sample becomes sparse in high-dimensional space, making it harder to find good matches. Machine learning can help address this issue. Techniques like regularization and hyperparameter tuning shrink coefficients to manage many variables, and decision trees can capture nonlinear relationships and interactions. Ensemble methods can further improve the stability of propensity score estimates.That said, using machine learning reduces interpretability,}
 \end{enumerate}
-
